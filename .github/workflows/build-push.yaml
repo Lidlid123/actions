@@ -101,7 +101,7 @@ jobs:
 
       # - name: Ensure imagePullSecret (optional fallback if nodes can't pull)
       #   run: |
-      #     # derive registry
+      #     # derive registryz
       #     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       #     REGISTRY="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
       #     # create or update secret 'regcred' in the current namespace (default)
