@@ -17,6 +17,9 @@ jobs:
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+    # expose the image_tag as a job output for the deploy job
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.image_tag }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -39,12 +42,15 @@ jobs:
         id: set_tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "IMAGE_TAG=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
+            IMAGE_TAG="${{ github.event.inputs.tag }}"
           else
             SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
-            echo "IMAGE_TAG=$(date -u +%Y%m%d)-$SHORT_SHA" >> $GITHUB_ENV
+            IMAGE_TAG="$(date -u +%Y%m%d)-${SHORT_SHA}"
           fi
-          echo "IMAGE_TAG=$IMAGE_TAG"
+          # export to env for later steps in this job (if needed)
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          # set step output so the job exposes it
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Ensure ECR repo exists (create if missing)
         run: |
@@ -64,3 +70,74 @@ jobs:
           docker tag "${FULL_IMAGE}" "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
           docker push "${FULL_IMAGE}"
           docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        uses: aws-actions/eks-update-kubeconfig@v2
+        with:
+          cluster-name: ${{ secrets.EKS_CLUSTER_NAME }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          
+          version: '1.28.0'  # specify the kubectl version you want
+
+      # - name: Ensure imagePullSecret (optional fallback if nodes can't pull)
+      #   run: |
+      #     # derive registry
+      #     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      #     REGISTRY="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+      #     # create or update secret 'regcred' in the current namespace (default)
+      #     PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+      #     kubectl create secret docker-registry regcred \
+      #       --docker-server="$REGISTRY" \
+      #       --docker-username=AWS \
+      #       --docker-password="$PASSWORD" \
+      #       --docker-email=you@example.com \
+      #       --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy (create if missing, otherwise rolling update)
+        run: |
+          IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          FULL_IMAGE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
+
+          echo "Using image: $FULL_IMAGE"
+
+          # If deployment doesn't exist yet, replace placeholder IMAGE_TAG in manifest and apply
+          if ! kubectl get deployment my-app >/dev/null 2>&1; then
+            echo "Deployment my-app not found — applying manifest with image $FULL_IMAGE"
+            # replace placeholder IMAGE_TAG in k8s/deployment.yaml if present (no-op if file already has exact tag)
+            if [ -f k8s/deployment.yaml ]; then
+              sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" k8s/deployment.yaml || true
+              kubectl apply -f k8s/deployment.yaml
+            else
+              echo "k8s/deployment.yaml not found in repo — aborting create"
+              exit 1
+            fi
+            # also apply service if present
+            [ -f k8s/service.yaml ] && kubectl apply -f k8s/service.yaml || true
+          fi
+
+          # Do rolling update (works for both initial apply and later updates)
+          kubectl set image deployment/my-app my-app="$FULL_IMAGE" --record
+          kubectl rollout status deployment/my-app --timeout=180s

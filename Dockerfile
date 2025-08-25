@@ -1,4 +1,6 @@
-# Dockerfile
-FROM alpine:3.18
-RUN apk add --no-cache curl
-CMD ["sh", "-c", "echo Hello from image built by GitHub Actions && sleep 3600"]
+# ...existing code...
+FROM nginx:stable-alpine
+COPY dist/default.conf /etc/nginx/conf.d/default.conf
+COPY dist/ /usr/share/nginx/html
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
