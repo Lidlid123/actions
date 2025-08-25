@@ -88,16 +88,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Install AWS CLI
+        uses: imehedi/actions-awscli-v2@latest
+
       - name: Update kubeconfig for EKS
-        uses: aws-actions/eks-update-kubeconfig@v2
-        with:
-          cluster-name: ${{ secrets.EKS_CLUSTER_NAME }}
-          region: ${{ env.AWS_REGION }}
+        # use the AWS CLI directly instead of a marketplace action
+        run: |
+          aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
-          
+
           version: '1.28.0'  # specify the kubectl version you want
 
       # - name: Ensure imagePullSecret (optional fallback if nodes can't pull)
