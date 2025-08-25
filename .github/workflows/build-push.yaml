@@ -97,7 +97,7 @@ jobs:
         uses: azure/setup-kubectl@v3
         with:
 
-          version: '1.28.0'  # specify the kubectl version you want
+          version: 'latest'  # specify the kubectl version you want
 
       # - name: Ensure imagePullSecret (optional fallback if nodes can't pull)
       #   run: |
